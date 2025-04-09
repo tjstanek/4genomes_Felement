@@ -1,0 +1,105 @@
+# Define the base path for the FASTQ files
+BASE_FASTA_PATH = "/projects/genetics/ellison_lab/4genomes/rnaseq/allchrom/fasta/"
+BASE_GFF_PATH = "/projects/genetics/ellison_lab/4genomes/rnaseq/allchrom/gff/"
+BASE_FASTQ_PATH = "/projects/genetics/ellison_lab/4genomes/rnaseq/fastq/"
+
+# Define paths for reference genomes and annotations
+REFERENCES = {
+    "Dtak_allchrom": {
+        "fasta": BASE_FASTA_PATH + "DtakHiC1_allchrom/DtakHiC1_allchrom.fasta",
+        "gff": BASE_GFF_PATH + "DtakHiC1_allchrom.gff",
+        "samples": ["SRR346756", "SRR346757"]
+    },
+    "Dkik_allchrom": {
+        "fasta": BASE_FASTA_PATH + "DkikHiC1_allchrom/DkikHiC1_allchrom.fasta",
+        "gff": BASE_GFF_PATH + "DkikHiC1_allchrom.gff",
+        "samples": ["SRR346730", "SRR346732"]
+    },
+    "Dana_allchrom": {
+        "fasta": BASE_FASTA_PATH + "DanaHiC1_allchrom/DanaHiC1_allchrom.fasta",
+        "gff": BASE_GFF_PATH + "DanaHiC1_allchrom.gff",
+        "samples": ["SRR166824", "SRR166825", "SRR768437", "SRR768438"]
+    },
+    "Dbip_allchrom": {
+        "fasta": BASE_FASTA_PATH + "DbipHiC1_allchrom/DbipHiC1_allchrom.fasta",
+        "gff": BASE_GFF_PATH + "DbipHiC1_allchrom.gff",
+        "samples": ["SRR346721", "SRR346723"]
+    }
+}
+
+SAMPLES = [sample for ref in REFERENCES.values() for sample in ref["samples"]]
+
+# Function to get the reference for a sample
+def get_reference(sample):
+    for ref, info in REFERENCES.items():
+        if sample in info["samples"]:
+            #print(f"Sample: {sample} | Reference FASTA: {info['fasta']}")  # Debug output
+            return info["fasta"], info["gff"]
+    raise ValueError(f"No reference found for sample: {sample}")
+
+
+rule all:
+    input:
+        expand("allchrom_counts/{sample}.tsv", sample=SAMPLES)
+
+rule trim:
+    input:
+        r1=BASE_FASTQ_PATH + "{sample}_1.fastq.gz",
+        r2=BASE_FASTQ_PATH + "{sample}_2.fastq.gz"
+    output:
+        r1="trim/{sample}_1.fastq.gz",
+        r2="trim/{sample}_2.fastq.gz",
+        html="trim/{sample}.html",
+        json="trim/{sample}.json"
+    conda:
+        "fastp"
+    resources:
+        runtime=600,
+        mem_mb=8000,
+        cpus=12,
+        partition="genetics"
+    shell:
+        """
+        fastp --correction -i {input.r1} -I {input.r2} -o {output.r1} -O {output.r2} -h {output.html} -j {output.json}
+        """
+
+rule hisat2_align:
+    input:
+        r1="trim/{sample}_1.fastq.gz",
+        r2="trim/{sample}_2.fastq.gz",
+        fasta=lambda wildcards: get_reference(wildcards.sample)[0],
+    output:
+        "bam/{sample}.bam"
+    params:
+        basename=lambda wildcards: get_reference(wildcards.sample)[0][:-6],
+    conda:
+        "base"
+    threads: 12
+    resources:
+        runtime=4320,
+        mem_mb=120000,
+        cpus=28,
+    shell:
+        """
+        module load HISAT2/2.1.0
+        module load samtools
+        hisat2 -x {params.basename} -1 {input.r1} -2 {input.r2} --rna-strandness FR -p {threads} --no-unal | samtools sort -n -o {output}
+        """
+
+rule htseq_counts:
+    input:
+        bam="bam/{sample}.bam",
+        gff=lambda wildcards: get_reference(wildcards.sample)[1],
+    output:
+        "allchrom_counts/{sample}.tsv"
+    conda:
+        "htseq"
+    resources:
+        runtime=4320,
+        mem_mb=80000,
+        cpus=28,
+    shell:
+        """
+        htseq-count -f bam -s yes -r name -a 20 -i ID -t gene {input.bam} {input.gff} > {output}
+        """
+	
